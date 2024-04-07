@@ -1,0 +1,3 @@
+
+xterm &
+exec ./bin/ratwm
