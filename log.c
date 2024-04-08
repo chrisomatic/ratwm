@@ -25,7 +25,7 @@ void _log(LogLevel level, const char* file, int line, const char* fmt, ...)
     strftime(time_str, sizeof(time_str), "%H:%M:%S", _time);
 
     va_start(ap, fmt);
-    fprintf(stdout, "%s %s%-5s\x1b[0m \x1b[90m%s:%d:\x1b[0m ", time_str, log_level_colors[level], log_level_strings[level], file, line);
+    fprintf(stdout, "%s %s%-5s\x1b[0m \x1b[90m%s:%-4d:\x1b[0m ", time_str, log_level_colors[level], log_level_strings[level], file, line);
     vfprintf(stdout, fmt, ap);
     fprintf(stdout, "\n");
     fflush(stdout);

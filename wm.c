@@ -1,6 +1,7 @@
 
 #define MAX_CLIENTS 32
 
+// Note: Window is an unsigned long in the Xlib
 typedef struct
 {
     Window w;
@@ -9,6 +10,65 @@ typedef struct
 
 FrameClient clients[MAX_CLIENTS] = {0};
 int client_count = 0;
+
+FrameClient* _frame_client_get(Window w)
+{
+    for(int i = 0; i < client_count; ++i)
+        if(w == clients[i].w)
+            return &clients[i];
+
+    return NULL;
+}
+
+int _frame_client_get_index(Window w)
+{
+    for(int i = 0; i < client_count; ++i)
+        if(w == clients[i].w)
+            return i;
+
+    return -1;
+}
+
+bool _frame_client_save(Window w, Window frame)
+{
+    int _index = client_count;
+    bool new_client = true;
+
+    for(int i = 0; i < client_count; ++i)
+    {
+        if(w == clients[i].w)
+        {
+            // found existing frame client
+            _index = i;
+            new_client = false;
+            break;
+        }
+    }
+
+    if(new_client)
+    {
+        if(client_count >= MAX_CLIENTS)
+            return false;
+       
+        client_count++;
+    }
+
+    FrameClient* client = &clients[_index];
+    client->w = w;
+    client->frame = frame;
+
+    return true;
+}
+
+void _frame_client_remove(Window w)
+{
+    int index = _frame_client_get_index(w);
+    if(index < 0)
+        return;
+
+    client_count--;
+    memcpy(&clients[index], &clients[client_count], sizeof(FrameClient));
+}
 
 const char* event_type_str_lookup[37] = {"","","KeyPress","KeyRelease","ButtonPress","ButtonRelease","MotionNotify","EnterNotify","LeaveNotify","FocusIn","FocusOut","KeymapNotify","Expose","GraphicsExpose","NoExpose","VisibilityNotify","CreateNotify","DestroyNotify","UnmapNotify","MapNotify","MapRequest","ReparentNotify","ConfigureNotify","ConfigureRequest","GravityNotify","ResizeRequest","CirculateNotify","CirculateRequest","PropertyNotify","SelectionClear","SelectionRequest","SelectionNotify","ColormapNotify","ClientMessage","MappingNotify","GenericEvent","LASTEvent"};
 
@@ -38,45 +98,47 @@ void wm_frame(Window w)
           x_window_attrs.height,
           BORDER_WIDTH,
           BORDER_COLOR,
-          BG_COLOR);
+          BG_COLOR
+      );
 
       // 3. Select events on frame.
-      XSelectInput(
-          display,
-          frame,
-          SubstructureRedirectMask | SubstructureNotifyMask);
-      
-      // 4. Add client to save set, so that it will be restored and kept alive if we
-      // crash.
+      XSelectInput(display, frame, SubstructureRedirectMask | SubstructureNotifyMask);
       XAddToSaveSet(display, w);
 
-      // 5. Reparent client window.
-      XReparentWindow(
-          display,
-          w,
-          frame,
-          0, 0);  // Offset of client window within frame.
-      // 6. Map frame.
+      XReparentWindow(display, w, frame, 0, 0);
       XMapWindow(display, frame);
 
-      // 7. Save frame handle.
-      FrameClient* client = &clients[client_count++];
-      client->w = w;
-      client->frame = frame;
+      _frame_client_save(w, frame);
 
-#if 0
-      // 8. Grab events for window management actions on client window.
-      //   a. Move windows with alt + left button.
-      XGrabButton(...);
-      //   b. Resize windows with alt + right button.
-      XGrabButton(...);
-      //   c. Kill windows with alt + f4.
-      XGrabKey(...);
-      //   d. Switch windows with alt + tab.
-      XGrabKey(...);
-#endif
+      // Grab universal window management actions on client window.
 
-      logi("Framed window %p in frame %p", &w, &frame);
+      // Move windows with alt + left button.
+      XGrabButton(display, Button1, Mod1Mask, w, false, ButtonPressMask | ButtonReleaseMask | ButtonMotionMask, GrabModeAsync, GrabModeAsync, None, None);
+      
+      // Resize windows with alt + right button.
+      XGrabButton(display, Button3, Mod1Mask, w, false, ButtonPressMask | ButtonReleaseMask | ButtonMotionMask, GrabModeAsync, GrabModeAsync, None, None);
+
+      // Kill windows with alt + f4.
+      XGrabKey(display, XKeysymToKeycode(display, XK_F4), Mod1Mask, w, false, GrabModeAsync, GrabModeAsync);
+
+      // Switch windows with alt + tab.
+      XGrabKey(display, XKeysymToKeycode(display, XK_Tab), Mod1Mask, w, false, GrabModeAsync, GrabModeAsync);
+
+      logi("Framed window %lu in frame %lu", w, frame);
+}
+
+void wm_unframe(Window w)
+{
+    FrameClient* client = _frame_client_get(w);
+
+    XUnmapWindow(display, client->frame);
+    XReparentWindow(display, w, root, 0, 0);
+    XRemoveFromSaveSet(display, w);
+    XDestroyWindow(display, client->frame);
+
+    _frame_client_remove(w);
+
+    logi("Unframed window %lu [frame: %lu]", w, client->frame);
 }
 
 
@@ -101,14 +163,9 @@ void on_create_notify(const XCreateWindowEvent e)
     return;
 }
 
-void on_destroy_notify(const XDestroyWindowEvent e)
-{
-
-}
-
 void on_reparent_notify(const XReparentEvent e)
 {
-
+    return;
 }
 
 void on_configure_request(const XConfigureRequestEvent e)
@@ -123,14 +180,50 @@ void on_configure_request(const XConfigureRequestEvent e)
     changes.sibling = e.above;
     changes.stack_mode = e.detail;
 
+    if(client_count > 0)
+    {
+        FrameClient* cli = _frame_client_get(e.window);
+        if(cli)
+        {
+            XConfigureWindow(display, cli->frame, e.value_mask, &changes);
+            logi("Resize frame %lu to size %d %d", cli->frame, e.width, e.height);
+        }
+    }
+
     XConfigureWindow(display, e.window, e.value_mask, &changes);
-    logi("Resize window %p to size %d %d", &e.window, e.width, e.height);
+    logi("Resize window %lu to size %d %d", e.window, e.width, e.height);
 }
 
 void on_map_request(const XMapRequestEvent e)
 {
     wm_frame(e.window);
     XMapWindow(display, e.window);
+}
+
+void on_map_notify(const XMapEvent e)
+{
+    return;
+}
+
+void on_unmap_notify(const XUnmapEvent e)
+{
+    if (_frame_client_get(e.window) == NULL)
+    {
+        logi("Ignore UnmapNotify for non-client window %lu", e.window);
+        return;
+    }
+
+    wm_unframe(e.window);
+}
+
+void on_configure_notify(const XConfigureEvent e)
+{
+    return;
+}
+
+void on_destroy_notify(const XDestroyWindowEvent e)
+{
+    return;
 }
 
 bool wm_create()
@@ -189,8 +282,17 @@ void wm_run()
             case MapRequest:
                 on_map_request(e.xmaprequest);
                 break;
+            case MapNotify:
+                on_map_notify(e.xmap);
+                break;
+            case UnmapNotify:
+                on_unmap_notify(e.xunmap);
+                break;
+            case ConfigureNotify:
+                on_configure_notify(e.xconfigure);
+                break;
             default:
-                logw("Ignored event");
+                logw("Ignored event, type: %s", event_type_str_lookup[e.type]);
         }
     }
 
