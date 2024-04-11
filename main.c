@@ -9,6 +9,7 @@
 #include <X11/Xutil.h>
 
 #include "log.c"
+#include "draw.c"
 #include "wm.c"
 
 void main()

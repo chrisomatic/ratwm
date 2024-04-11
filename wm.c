@@ -1,4 +1,7 @@
 
+#define MIN(x,y) ((x) < (y) ? (x) : (y))
+#define MAX(x,y) ((x) > (y) ? (x) : (y))
+
 #define MAX_CLIENTS 32
 
 // Note: Window is an unsigned long in the Xlib
@@ -70,17 +73,27 @@ void _frame_client_remove(Window w)
     memcpy(&clients[index], &clients[client_count], sizeof(FrameClient));
 }
 
+typedef struct
+{
+    int x,y;
+} Vec2i;
+
+const unsigned int  BORDER_WIDTH = 3;
+const unsigned long BORDER_COLOR = 0xf08000;
+const unsigned long BG_COLOR     = 0x323232;
+
 const char* event_type_str_lookup[37] = {"","","KeyPress","KeyRelease","ButtonPress","ButtonRelease","MotionNotify","EnterNotify","LeaveNotify","FocusIn","FocusOut","KeymapNotify","Expose","GraphicsExpose","NoExpose","VisibilityNotify","CreateNotify","DestroyNotify","UnmapNotify","MapNotify","MapRequest","ReparentNotify","ConfigureNotify","ConfigureRequest","GravityNotify","ResizeRequest","CirculateNotify","CirculateRequest","PropertyNotify","SelectionClear","SelectionRequest","SelectionNotify","ColormapNotify","ClientMessage","MappingNotify","GenericEvent","LASTEvent"};
 
 Display* display;
 Window root;
+Drw* drw;
+
+Vec2i drag_start_pos;
+Vec2i drag_start_frame_pos;
+Vec2i drag_start_frame_size;
 
 void wm_frame(Window w)
 {
-    const unsigned int  BORDER_WIDTH = 3;
-    const unsigned long BORDER_COLOR = 0xff0000;
-    const unsigned long BG_COLOR = 0x0000ff;
-
     XWindowAttributes x_window_attrs;
     int status = XGetWindowAttributes(display, w, &x_window_attrs);
     if(status == 0)
@@ -216,7 +229,127 @@ void on_unmap_notify(const XUnmapEvent e)
     wm_unframe(e.window);
 }
 
+
 void on_configure_notify(const XConfigureEvent e)
+{
+    return;
+}
+
+void on_button_press(const XButtonEvent e)
+{
+    FrameClient* cli = _frame_client_get(e.window);
+    if(!cli) return;
+
+    // 1. Save initial cursor position.
+    drag_start_pos.x = e.x_root;
+    drag_start_pos.y = e.y_root;
+
+    // 2. Save initial window info.
+    Window returned_root;
+    int x, y;
+    unsigned width, height, border_width, depth;
+
+    if(XGetGeometry(display,cli->frame, &returned_root, &x, &y, &width, &height, &border_width, &depth) == 0) 
+    {
+      loge("Failed to Get Geometry for frame %lu", cli->frame);
+      return;
+    }
+
+    drag_start_frame_pos.x = x;
+    drag_start_frame_pos.y = y;
+
+    drag_start_frame_size.x = width;
+    drag_start_frame_size.y = height;
+
+    // 3. Raise clicked window to top.
+    XRaiseWindow(display, cli->frame);
+}
+
+void on_button_release(const XButtonEvent e)
+{
+    return;
+}
+
+void on_motion_notify(const XMotionEvent e)
+{
+    FrameClient* cli = _frame_client_get(e.window);
+    if(!cli) return;
+
+    const Vec2i drag_pos = {e.x_root, e.y_root};
+    const Vec2i delta    = {drag_pos.x - drag_start_pos.x, drag_pos.y - drag_start_pos.y};
+
+    if (e.state & Button1Mask)
+    {
+        // alt + left button: Move window.
+        const Vec2i dest_frame_pos = {drag_start_frame_pos.x + delta.x, drag_start_frame_pos.y + delta.y};
+        XMoveWindow(display, cli->frame, dest_frame_pos.x, dest_frame_pos.y);
+    }
+    else if (e.state & Button3Mask)
+    {
+        // alt + right button: Resize window.
+        // Window dimensions cannot be negative.
+
+        const Vec2i size_delta      = {MAX(delta.x, -drag_start_frame_size.x), MAX(delta.y, -drag_start_frame_size.y)};
+        const Vec2i dest_frame_size = {drag_start_frame_size.x + size_delta.x, drag_start_frame_size.y + size_delta.y};
+
+        XResizeWindow(display, cli->frame, dest_frame_size.x, dest_frame_size.y);
+        XResizeWindow(display, e.window,   dest_frame_size.x, dest_frame_size.y);
+    }
+}
+
+void on_key_press(const XKeyEvent e)
+{
+    
+#if 0
+  if ((e.state & Mod1Mask) && (e.keycode == XKeysymToKeycode(display, XK_F4)))
+  {
+      // alt + f4: Close window.
+      //
+      // There are two ways to tell an X window to close. The first is to send it
+      // a message of type WM_PROTOCOLS and value WM_DELETE_WINDOW. If the client
+      // has not explicitly marked itself as supporting this more civilized
+      // behavior (using XSetWMProtocols()), we kill it with XKillClient().
+      Atom* supported_protocols;
+      int num_supported_protocols;
+      if (XGetWMProtocols(display, e.window, &supported_protocols, &num_supported_protocols) &&
+        (::std::find(supported_protocols,
+                     supported_protocols + num_supported_protocols,
+                     WM_DELETE_WINDOW) !=
+         supported_protocols + num_supported_protocols)) {
+      LOG(INFO) << "Gracefully deleting window " << e.window;
+
+      // 1. Construct message.
+      XEvent msg;
+      memset(&msg, 0, sizeof(msg));
+      msg.xclient.type = ClientMessage;
+      msg.xclient.message_type = WM_PROTOCOLS;
+      msg.xclient.window = e.window;
+      msg.xclient.format = 32;
+      msg.xclient.data.l[0] = WM_DELETE_WINDOW;
+      // 2. Send message to window to be closed.
+      CHECK(XSendEvent(display_, e.window, false, 0, &msg));
+    } else {
+      LOG(INFO) << "Killing window " << e.window;
+      XKillClient(display_, e.window);
+    }
+  } else if ((e.state & Mod1Mask) &&
+             (e.keycode == XKeysymToKeycode(display_, XK_Tab))) {
+    // alt + tab: Switch window.
+    // 1. Find next window.
+    auto i = clients_.find(e.window);
+    CHECK(i != clients_.end());
+    ++i;
+    if (i == clients_.end()) {
+      i = clients_.begin();
+    }
+    // 2. Raise and set focus.
+    XRaiseWindow(display_, i->second);
+    XSetInputFocus(display_, i->first, RevertToPointerRoot, CurrentTime);
+  }
+#endif
+}
+
+void on_key_release(const XKeyEvent e)
 {
     return;
 }
@@ -239,6 +372,12 @@ bool wm_create()
 
     display = _display;
     root    = DefaultRootWindow(_display);
+
+    //drw = draw_create(display, 0, root, 1000, 1000);
+    //draw_rect(drw, 20,20, 50, 100, true);
+
+    //XCopyArea(display, drw->drawable, root, drw->gc, 0, 0, 100, 100, 0, 0);
+    //XSync(display, false);
 
     return true;
 }
@@ -290,6 +429,23 @@ void wm_run()
                 break;
             case ConfigureNotify:
                 on_configure_notify(e.xconfigure);
+                break;
+            case ButtonPress:
+                on_button_press(e.xbutton);
+                break;
+            case ButtonRelease:
+                on_button_release(e.xbutton);
+                break;
+            case MotionNotify:
+                // Skip any already pending motion events.
+                while (XCheckTypedWindowEvent(display, e.xmotion.window, MotionNotify, &e)) {}
+                on_motion_notify(e.xmotion);
+                break;
+            case KeyPress:
+                on_key_press(e.xkey);
+                break;
+            case KeyRelease:
+                on_key_release(e.xkey);
                 break;
             default:
                 logw("Ignored event, type: %s", event_type_str_lookup[e.type]);
