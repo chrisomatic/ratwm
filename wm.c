@@ -97,7 +97,7 @@ Vec2i drag_start_pos;
 Vec2i drag_start_frame_pos;
 Vec2i drag_start_frame_size;
 
-void wm_frame(Window w)
+void wm_frame(Window w, bool existed_before_wm)
 {
     XWindowAttributes x_window_attrs;
     int status = XGetWindowAttributes(display, w, &x_window_attrs);
@@ -105,6 +105,14 @@ void wm_frame(Window w)
     {
         loge("Failed to get Window Attributes.");
         return;
+    }
+
+    if(existed_before_wm)
+    {
+        if(x_window_attrs.override_redirect || x_window_attrs.map_state != IsViewable)
+        {
+            return;
+        }
     }
 
     const Window frame = XCreateSimpleWindow(
@@ -117,32 +125,23 @@ void wm_frame(Window w)
           BORDER_WIDTH,
           BORDER_COLOR,
           BG_COLOR
-      );
+    );
 
-      // 3. Select events on frame.
-      XSelectInput(display, frame, SubstructureRedirectMask | SubstructureNotifyMask);
-      XAddToSaveSet(display, w);
+    XSelectInput(display, frame, SubstructureRedirectMask | SubstructureNotifyMask);
+    XAddToSaveSet(display, w);
 
-      XReparentWindow(display, w, frame, 0, 0);
-      XMapWindow(display, frame);
+    XReparentWindow(display, w, frame, 0, 0);
+    XMapWindow(display, frame);
 
-      _frame_client_save(w, frame);
+    _frame_client_save(w, frame);
 
-      // Grab universal window management actions on client window.
+    // Grab universal window management actions on client window.
+    XGrabButton(display, Button1, Mod1Mask, w, false, ButtonPressMask | ButtonReleaseMask | ButtonMotionMask, GrabModeAsync, GrabModeAsync, None, None);
+    XGrabButton(display, Button3, Mod1Mask, w, false, ButtonPressMask | ButtonReleaseMask | ButtonMotionMask, GrabModeAsync, GrabModeAsync, None, None);
+    XGrabKey(display, XKeysymToKeycode(display, XK_F4), Mod1Mask, w, false, GrabModeAsync, GrabModeAsync);
+    XGrabKey(display, XKeysymToKeycode(display, XK_Tab), Mod1Mask, w, false, GrabModeAsync, GrabModeAsync);
 
-      // Move windows with alt + left button.
-      XGrabButton(display, Button1, Mod1Mask, w, false, ButtonPressMask | ButtonReleaseMask | ButtonMotionMask, GrabModeAsync, GrabModeAsync, None, None);
-      
-      // Resize windows with alt + right button.
-      XGrabButton(display, Button3, Mod1Mask, w, false, ButtonPressMask | ButtonReleaseMask | ButtonMotionMask, GrabModeAsync, GrabModeAsync, None, None);
-
-      // Kill windows with alt + f4.
-      XGrabKey(display, XKeysymToKeycode(display, XK_F4), Mod1Mask, w, false, GrabModeAsync, GrabModeAsync);
-
-      // Switch windows with alt + tab.
-      XGrabKey(display, XKeysymToKeycode(display, XK_Tab), Mod1Mask, w, false, GrabModeAsync, GrabModeAsync);
-
-      logi("Framed window %lu in frame %lu", w, frame);
+    logi("Framed window %lu in frame %lu", w, frame);
 }
 
 void wm_unframe(Window w)
@@ -208,13 +207,14 @@ void on_configure_request(const XConfigureRequestEvent e)
         }
     }
 
+
     XConfigureWindow(display, e.window, e.value_mask, &changes);
     logi("Resize window %lu to size %d %d", e.window, e.width, e.height);
 }
 
 void on_map_request(const XMapRequestEvent e)
 {
-    wm_frame(e.window);
+    wm_frame(e.window, false);
     XMapWindow(display, e.window);
 }
 
@@ -245,11 +245,9 @@ void on_button_press(const XButtonEvent e)
     FrameClient* cli = _frame_client_get(e.window);
     if(!cli) return;
 
-    // 1. Save initial cursor position.
     drag_start_pos.x = e.x_root;
     drag_start_pos.y = e.y_root;
 
-    // 2. Save initial window info.
     Window returned_root;
     int x, y;
     unsigned width, height, border_width, depth;
@@ -266,7 +264,6 @@ void on_button_press(const XButtonEvent e)
     drag_start_frame_size.x = width;
     drag_start_frame_size.y = height;
 
-    // 3. Raise clicked window to top.
     XRaiseWindow(display, cli->frame);
 }
 
@@ -285,15 +282,11 @@ void on_motion_notify(const XMotionEvent e)
 
     if (e.state & Button1Mask)
     {
-        // alt + left button: Move window.
         const Vec2i dest_frame_pos = {drag_start_frame_pos.x + delta.x, drag_start_frame_pos.y + delta.y};
         XMoveWindow(display, cli->frame, dest_frame_pos.x, dest_frame_pos.y);
     }
     else if (e.state & Button3Mask)
     {
-        // alt + right button: Resize window.
-        // Window dimensions cannot be negative.
-
         const Vec2i size_delta      = {MAX(delta.x, -drag_start_frame_size.x), MAX(delta.y, -drag_start_frame_size.y)};
         const Vec2i dest_frame_size = {drag_start_frame_size.x + size_delta.x, drag_start_frame_size.y + size_delta.y};
 
@@ -304,53 +297,71 @@ void on_motion_notify(const XMotionEvent e)
 
 void on_key_press(const XKeyEvent e)
 {
-    
 #if 0
-  if ((e.state & Mod1Mask) && (e.keycode == XKeysymToKeycode(display, XK_F4)))
-  {
-      // alt + f4: Close window.
-      //
-      // There are two ways to tell an X window to close. The first is to send it
-      // a message of type WM_PROTOCOLS and value WM_DELETE_WINDOW. If the client
-      // has not explicitly marked itself as supporting this more civilized
-      // behavior (using XSetWMProtocols()), we kill it with XKillClient().
-      Atom* supported_protocols;
-      int num_supported_protocols;
-      if (XGetWMProtocols(display, e.window, &supported_protocols, &num_supported_protocols) &&
-        (::std::find(supported_protocols,
-                     supported_protocols + num_supported_protocols,
-                     WM_DELETE_WINDOW) !=
-         supported_protocols + num_supported_protocols)) {
-      LOG(INFO) << "Gracefully deleting window " << e.window;
+    
+    if ((e.state & Mod1Mask) && (e.keycode == XKeysymToKeycode(display, XK_F4)))
+    {
+        // alt + f4: Close window.
 
-      // 1. Construct message.
-      XEvent msg;
-      memset(&msg, 0, sizeof(msg));
-      msg.xclient.type = ClientMessage;
-      msg.xclient.message_type = WM_PROTOCOLS;
-      msg.xclient.window = e.window;
-      msg.xclient.format = 32;
-      msg.xclient.data.l[0] = WM_DELETE_WINDOW;
-      // 2. Send message to window to be closed.
-      CHECK(XSendEvent(display_, e.window, false, 0, &msg));
-    } else {
-      LOG(INFO) << "Killing window " << e.window;
-      XKillClient(display_, e.window);
+        Atom* supported_protocols;
+        int num_supported_protocols;
+
+        int got_protocols = XGetWMProtocols(display, e.window, &supported_protocols, &num_supported_protocols);
+        bool has_delete_protocol = false;
+
+        if(got_protocols)
+        {
+            for(int i = 0; i < num_supported_protocols; ++i)
+            {
+                if(supported_protocols + i == WM_DELETE_WINDOW)
+                {
+                    has_delete_protocol = true;
+                    break;
+                }
+            }
+        }
+
+        if (has_delete_protocol)
+        {
+            logi("Gracefully deleting window");
+
+            XEvent msg;
+            memset(&msg, 0, sizeof(msg));
+            msg.xclient.type = ClientMessage;
+            msg.xclient.message_type = WM_PROTOCOLS;
+            msg.xclient.window = e.window;
+            msg.xclient.format = 32;
+            msg.xclient.data.l[0] = WM_DELETE_WINDOW;
+
+            XSendEvent(display, e.window, false, 0, &msg);
+        }
+        else
+        {
+            // force kill
+            logi("Killing window %lu", e.window);
+            XKillClient(display, e.window);
+        }
     }
-  } else if ((e.state & Mod1Mask) &&
-             (e.keycode == XKeysymToKeycode(display_, XK_Tab))) {
-    // alt + tab: Switch window.
-    // 1. Find next window.
-    auto i = clients_.find(e.window);
-    CHECK(i != clients_.end());
-    ++i;
-    if (i == clients_.end()) {
-      i = clients_.begin();
+    else if ((e.state & Mod1Mask) && (e.keycode == XKeysymToKeycode(display, XK_Tab)))
+    {
+#if 0
+        // alt + tab: Switch window.
+        // 1. Find next window.
+
+
+
+        auto i = clients_.find(e.window);
+        CHECK(i != clients_.end());
+        ++i;
+        if (i == clients_.end()) {
+          i = clients_.begin();
+        }
+
+        // 2. Raise and set focus.
+        XRaiseWindow(display_, i->second);
+        XSetInputFocus(display_, i->first, RevertToPointerRoot, CurrentTime);
+#endif
     }
-    // 2. Raise and set focus.
-    XRaiseWindow(display_, i->second);
-    XSetInputFocus(display_, i->first, RevertToPointerRoot, CurrentTime);
-  }
 #endif
 }
 
@@ -431,6 +442,30 @@ void wm_run()
 
     XSetErrorHandler(on_x_error);
 
+    XGrabServer(display);
+
+    // handle any existing top level windows, by framing them
+    Window returned_root;
+    Window returned_parent;
+
+    Window* top_level_windows;
+    unsigned int top_level_windows_count;
+
+    if(XQueryTree(display,root, &returned_root, &returned_parent, &top_level_windows, &top_level_windows_count))
+    {
+        if(returned_root == root)
+        {
+            for (unsigned int i = 0; i < top_level_windows_count; ++i)
+            {
+                wm_frame(top_level_windows[i], true);
+            }
+        }
+
+        XFree(top_level_windows);
+    }
+
+    XUngrabServer(display);
+    
     // Main event loop
     for(;;)
     {
