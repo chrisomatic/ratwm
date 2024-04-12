@@ -81,12 +81,17 @@ typedef struct
 const unsigned int  BORDER_WIDTH = 3;
 const unsigned long BORDER_COLOR = 0xf08000;
 const unsigned long BG_COLOR     = 0x323232;
+const unsigned int  BAR_HEIGHT   = 25;
 
 const char* event_type_str_lookup[37] = {"","","KeyPress","KeyRelease","ButtonPress","ButtonRelease","MotionNotify","EnterNotify","LeaveNotify","FocusIn","FocusOut","KeymapNotify","Expose","GraphicsExpose","NoExpose","VisibilityNotify","CreateNotify","DestroyNotify","UnmapNotify","MapNotify","MapRequest","ReparentNotify","ConfigureNotify","ConfigureRequest","GravityNotify","ResizeRequest","CirculateNotify","CirculateRequest","PropertyNotify","SelectionClear","SelectionRequest","SelectionNotify","ColormapNotify","ClientMessage","MappingNotify","GenericEvent","LASTEvent"};
 
 Display* display;
 Window root;
 Drw* drw;
+
+int screen;
+int screen_width;
+int screen_height;
 
 Vec2i drag_start_pos;
 Vec2i drag_start_frame_pos;
@@ -359,6 +364,34 @@ void on_destroy_notify(const XDestroyWindowEvent e)
     return;
 }
 
+void draw_bar()
+{
+    draw_rect(drw, 0, 0, screen_width, BAR_HEIGHT, 0x323232, true);
+
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    char s[64];
+    size_t ret = strftime(s, sizeof(s), "%c", tm);
+    
+    XSetForeground(drw->dpy, drw->gc, 0xffffff);
+    XDrawString(drw->dpy, drw->drawable, drw->gc, 2,12, s, strlen(s));
+
+    XCopyArea(display, drw->drawable, root, drw->gc, 0, 0, screen_width, BAR_HEIGHT, 0, 0);
+    XSync(display,false);
+}
+
+void on_expose(const XExposeEvent e)
+{
+    if(e.count > 0)
+        return; // don't waste time updating if there are too many queued
+
+    if(e.window != root)
+        return;
+
+    // draw bar
+    draw_bar();
+}
+
 bool wm_create()
 {
     Display* _display = XOpenDisplay(NULL);
@@ -373,11 +406,13 @@ bool wm_create()
     display = _display;
     root    = DefaultRootWindow(_display);
 
-    //drw = draw_create(display, 0, root, 1000, 1000);
-    //draw_rect(drw, 20,20, 50, 100, true);
+    screen = DefaultScreen(display);
+    screen_width = DisplayWidth(display, screen);
+    screen_height = DisplayHeight(display, screen);
 
-    //XCopyArea(display, drw->drawable, root, drw->gc, 0, 0, 100, 100, 0, 0);
-    //XSync(display, false);
+    drw = draw_create(display, 0, root, screen_width, BAR_HEIGHT);
+
+    draw_bar();
 
     return true;
 }
@@ -386,7 +421,7 @@ void wm_run()
 {
     wm_detected = false;
     XSetErrorHandler(on_wm_detected);
-    XSelectInput(display, root, SubstructureRedirectMask | SubstructureNotifyMask);
+    XSelectInput(display, root, SubstructureRedirectMask | SubstructureNotifyMask | ExposureMask);
     XSync(display,false);
     if(wm_detected)
     {
@@ -446,6 +481,9 @@ void wm_run()
                 break;
             case KeyRelease:
                 on_key_release(e.xkey);
+                break;
+            case Expose:
+                on_expose(e.xexpose);
                 break;
             default:
                 logw("Ignored event, type: %s", event_type_str_lookup[e.type]);

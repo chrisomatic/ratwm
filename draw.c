@@ -26,12 +26,12 @@ Drw* draw_create(Display *dpy, int screen, Window root, unsigned int w, unsigned
     return drw;
 }
 
-void draw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled)
+void draw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned long color, int filled)
 {
     if (!drw)
         return;
 
-    XSetForeground(drw->dpy, drw->gc, 0xff00ff);
+    XSetForeground(drw->dpy, drw->gc, color);
 
     if (filled)
         XFillRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w, h);
